@@ -1,34 +1,34 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import (
-    USERNAME, lookback_start, lookback_end, make_request
+    USERNAME, lookback_start, lookback_end, make_request, get_paginated
 )
+
+# lookback_end is a date at midnight, so include that whole day
+window_end = lookback_end + timedelta(days=1)
+
+
+def parse_time(ts):
+    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+
+
+def login_of(item):
+    """login of a review/comment/commit's user — None for deleted (ghost) accounts"""
+    return (item.get("user") or item.get("author") or {}).get("login")
+
 
 def get_pr_reviews(repo_full_name, pr_number):
     """fetch all reviews for a PR"""
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews?per_page=100"
-    return make_request(url)
+    return get_paginated(f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews")
 
 def get_pr_comments(repo_full_name, pr_number):
     """fetch all inline and general PR comments"""
-    comments = []
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/comments?per_page=100"
-    comments.extend(make_request(url))
-    url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments?per_page=100"
-    comments.extend(make_request(url))
-    return comments
+    base = f"https://api.github.com/repos/{repo_full_name}"
+    return (get_paginated(f"{base}/pulls/{pr_number}/comments") +
+            get_paginated(f"{base}/issues/{pr_number}/comments"))
 
 def get_pr_commits(repo_full_name, pr_number):
-    """fetch all commits for a PR — used for cross referencing comment timestamps"""
-    commits = []
-    page = 1
-    while True:
-        url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/commits?per_page=100&page={page}"
-        res = make_request(url)
-        commits.extend(res)
-        if len(res) < 100:
-            break
-        page += 1
-    return commits
+    """fetch all commits for a PR (oldest first)"""
+    return get_paginated(f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/commits")
 
 def analyze_review_impact(username, reviews, pr_comments, commits):
     """
@@ -40,43 +40,38 @@ def analyze_review_impact(username, reviews, pr_comments, commits):
     acknowledged_count = 0
     no_response_count = 0
 
-    user_reviews = [r for r in reviews if r["user"]["login"] == username]
+    user_reviews = [r for r in reviews if login_of(r) == username and r.get("submitted_at")]
 
-    commit_times = [
-        datetime.strptime(
-            c["commit"]["committer"]["date"], "%Y-%m-%dT%H:%M:%SZ"
-        )
-        for c in commits
-    ]
+    commit_times = [parse_time(c["commit"]["committer"]["date"]) for c in commits]
 
     # signal 1: REQUEST_CHANGES followed by APPROVED from same reviewer
     request_changes_reviews = [r for r in user_reviews if r["state"] == "CHANGES_REQUESTED"]
     approved_reviews = [r for r in user_reviews if r["state"] == "APPROVED"]
 
     for rc_review in request_changes_reviews:
-        rc_time = datetime.strptime(rc_review["submitted_at"], "%Y-%m-%dT%H:%M:%SZ")
-        later_approvals = [
-            r for r in approved_reviews
-            if datetime.strptime(r["submitted_at"], "%Y-%m-%dT%H:%M:%SZ") > rc_time
-        ]
+        rc_time = parse_time(rc_review["submitted_at"])
+        if not lookback_start <= rc_time < window_end:
+            continue
+        later_approvals = [r for r in approved_reviews if parse_time(r["submitted_at"]) > rc_time]
         if later_approvals:
             actioned_count += 1
 
     # signal 2: reply or commit after reviewer inline comment
     reviewer_comments = [
         c for c in pr_comments
-        if c.get("user", {}).get("login") == username
+        if login_of(c) == username
         and "in_reply_to_id" not in c
+        and lookback_start <= parse_time(c["created_at"]) < window_end
     ]
 
     for comment in reviewer_comments:
         comment_id = comment["id"]
-        comment_time = datetime.strptime(comment["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+        comment_time = parse_time(comment["created_at"])
 
         replies = [
             c for c in pr_comments
             if c.get("in_reply_to_id") == comment_id
-            and c.get("user", {}).get("login") != username
+            and login_of(c) != username
         ]
 
         commits_after = [t for t in commit_times if t > comment_time]
@@ -102,7 +97,9 @@ def get_reviews_given(username):
 
     page = 1
     while True:
-        url = f"https://api.github.com/search/issues?q=type:pr+reviewed-by:{username}+created:{lookback_start.strftime('%Y-%m-%d')}..{lookback_end.strftime('%Y-%m-%d')}&per_page=100&page={page}"
+        # search can't filter by review date, so take every PR updated since the window
+        # opened and keep only the reviews submitted inside it
+        url = f"https://api.github.com/search/issues?q=type:pr+reviewed-by:{username}+-author:{username}+updated:{lookback_start.strftime('%Y-%m-%d')}..*&per_page=100&page={page}"
         res = make_request(url)
         items = res.get("items", [])
 
@@ -115,7 +112,8 @@ def get_reviews_given(username):
             commits = get_pr_commits(repo_full_name, pr_number)
 
             for review in reviews:
-                if review["user"]["login"] == username:
+                in_window = review.get("submitted_at") and lookback_start <= parse_time(review["submitted_at"]) < window_end
+                if login_of(review) == username and in_window:
                     review_count += 1
                     if review["state"] == "APPROVED":
                         approval_count += 1
@@ -125,7 +123,8 @@ def get_reviews_given(username):
             total_acknowledged += impact["acknowledged"]
             total_no_response += impact["no_response"]
 
-        if len(items) < 100:
+        # search returns at most 1000 results (10 pages)
+        if len(items) < 100 or page == 10:
             break
         page += 1
 
