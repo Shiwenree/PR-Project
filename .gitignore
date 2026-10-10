@@ -4,3 +4,4 @@ results.json
 __pycache__/
 .pytest_cache/
 labels.csv
+shadow_log.jsonl

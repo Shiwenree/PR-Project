@@ -30,11 +30,11 @@ Each remaining commit goes through these steps in order and stops at the first o
 
 | Step | Check | Bucket |
 |---|---|---|
-| 1. Size & config | Config-only files, diffs of 2 lines or fewer, whitespace-only changes | Lint/Config |
+| 1. Size & config | Config-only files (including manifests like `Cargo.toml`, lock files, and changelogs, so version bumps land here), diffs of 2 lines or fewer, whitespace-only changes | Lint/Config |
 | 2. WIP flag | WIP/temp keywords in the message, placeholder-only lines (`TODO`, `pass`, ...). Only sets flags | — |
 | 3. Test check | At least 80% of changed lines are in test files, and fewer than 20 non-test lines changed | Testing |
 | 3.5. Conversation | A reviewer asked for changes before the commit (a Request Changes review, or an inline comment on a file the commit touches), and the same reviewer approved after it | Addressed Comments |
-| 4. Lint by content | Comment-only or formatting-only changes | Lint/Config |
+| 4. Lint by content | Comment-only or formatting-only changes, including a formatter rewrapping lines | Lint/Config |
 | | Step 2 placeholder flag confirmed, or under half the added lines survive into the PR's final diff | WIP |
 | AI | Claude (Haiku 5.5) reads the diff and judges whether it is a meaningful design change or creation. It sees one diff, not the review timeline, so it can't assign Addressed Comments | Meaningful, Lint/Config, WIP, or Testing |
 | | The AI call fails or gives no answer, or the run uses `--no-ai` | Unclassified (scores 0, listed for a rerun) |
@@ -136,9 +136,65 @@ python evaluate.py score            # compare your labels with the pipeline
 - `score` reports overall agreement, precision and recall per bucket, which buckets get confused, and **which check made the calls you disagree with**. That last part tells you which threshold to tune.
 - `sample` won't overwrite an existing `labels.csv` unless you pass `--force`.
 
+## Testing a free rule against the AI (shadow mode)
+
+Most commits from developers who mostly do real work reach the AI. To cut those calls, the pipeline tests a candidate free rule in the background: a commit is meaningful when it adds 50+ lines of source code (no test or config files) and 90%+ of those lines reach the PR's final diff. The rule **never affects scores**. It only records its guess next to the AI's answer, and every run that uses the AI adds those pairs to `shadow_log.jsonl`.
+
+```bash
+python evaluate.py shadow
+```
+
+This reports how many AI calls the rule would save, how often the AI agreed, and the agreement rate you can be 95% sure of given the sample size. The rule is ready to replace those AI calls once **all three** hold (set in `config.py`):
+- at least **100 commits** the rule would have handled
+- **98%+ agreement** with the AI
+- across at least **5 different people**
+
+Small samples prove little: 19 of 20 agreeing only shows agreement is at least 76%, while 98 of 100 shows at least 93%. The report also lists the disagreements, to hand-label: the AI isn't ground truth either.
+
+## Market and competitors
+
+Researched October 2026. Pricing and accuracy figures mostly come from vendors or third-party blogs, so treat them as rough.
+
+### The market
+"Engineering intelligence" tools measure engineering output from GitHub, Jira, and similar data. The established platforms grew up around delivery metrics (cycle time, DORA, PR throughput) sold to engineering leaders. Since AI coding tools took off, the market has shifted to two new questions: **how much real work is in a PR** (raw counts mean less when AI writes code), and **what AI tools are worth** (AI-written code share, cost per PR). This project sits in the first group.
+
+### Closest competitors: measuring the work inside a PR
+
+| Company | What it does | Business | How it compares |
+|---|---|---|---|
+| [Weave](https://www.ycombinator.com/launches/Mjm-weave-ai-to-quantify-engineering-work) | Runs LLMs and its own models on every PR and review to estimate how long an expert engineer would take ("Weave Hours"). Classifies PRs as features, fixes, or maintenance, and marks AI-written code. Claims 0.94 correlation with expert estimates. | Y Combinator; [raised $13.5M Series A in 2026](https://runtimewire.com/zh/article/weave-raises-13-5-million-measure-ai-coding-roi). Free tier, about $50 per engineer per month. | **Closest match**, same "PR counts are broken in the AI era" pitch. Weave scores whole PRs with a trained model; this project scores each commit with rules first and AI last, and records why. Weave has acknowledged engineers find it "big brother". |
+| [GitClear](https://www.gitclear.com/help/meaningful_code_line_change_definition) | "Diff Delta" / "Line Impact": throws out moved, whitespace, and comment changes (it claims about 95% of changed lines are noise), then weights the rest, with deletions worth more than additions. | Paid SaaS. | Same instinct as this project's pre-filter and steps 1 and 4, but **no AI** and line-level weights. This project weights additions *more* than deletions, the opposite choice. |
+| [DX](https://getdx.com/blog/5-metrics-in-dx-to-measure-ai-impact/) | "TrueThroughput" uses AI to weight PR throughput by complexity, alongside developer surveys (the "Core 4" framework). | Enterprise, sales-led. | Complexity-weighted throughput at PR level, combined with how developers feel. No per-commit breakdown. |
+
+### Established platforms: delivery metrics, now adding AI reporting
+
+| Company | Focus | Pricing (third-party estimates) | How it compares |
+|---|---|---|---|
+| [Jellyfish](https://jellyfish.co/library/tools-to-measure-ai-developer-productivity/) | Executive reporting, where engineering time goes, AI impact. Aimed at 200+ developer orgs. | Not public; [estimates run from $50k to $300k a year](https://coderbuds.com/blog/jellyfish-alternatives-2026). | Measures delivery and allocation, not whether individual commits were real work. |
+| [LinearB](https://linearb.io/blog/8-million-prs-engineering-productivity) | Delivery metrics plus workflow automation. Argues PR acceptance rate is a better AI measure than suggestion acceptance. | [Free for small teams; roughly $20–60 per developer per month](https://wetheflywheel.com/en/comparisons/linearb-vs-jellyfish-vs-swarmia/). | Counts and times PRs; doesn't judge what's inside them. |
+| [Swarmia](https://www.swarmia.com/blog/productivity-impact-of-ai-coding-tools/) | Developer experience and delivery metrics. Reports PR sizes roughly doubled from 2025 to 2026, which is why raw counts mislead. | [Free for small teams; about $23–45 per developer per month](https://orgsignals.com/comparisons/pricing-comparison). | Most transparent pricing; still PR-level metrics. |
+| [Waydev](https://www.ycombinator.com/companies/waydev-ai) | Repositioned in 2026 around AI: commit-level attribution of agent, tokens, cost per PR. | [About $10–25 per developer per month](https://gitvelocity.dev/blog/engineering-intelligence-market-2026). | Commit-level like this project, but measures *AI usage and cost*, not whether the work was meaningful. |
+| [Span](https://www.span.app/) | Detects AI-written code from the code itself, so it works without tool telemetry; tracks agent sessions. | [Raised $25M in November 2025](https://www.upstartsmedia.com/p/span-raises-25m-ai-code-tracker); pricing not public. | Answers "how much was AI-written", not "how much was real work". |
+
+### Where this project fits
+
+What it does that the others don't:
+- **Commit-level buckets with reasons.** It says which commits in a PR were real work and which check decided it, so every score can be explained and disputed. Most tools score whole PRs.
+- **Rules first, AI last.** Reverts, survival into the final diff, and review follow-through are checked without a model, and those decisions are free and transparent. Only commits the rules can't decide go to Claude.
+- **Built to resist gaming.** Commit counts and size are damped, keywords only raise flags, and the AI ignores instructions written into commits.
+- **Open source and self-run.** Code never leaves the machine running it, apart from the diffs sent to the AI step. That matters to security-conscious teams that won't send code to a vendor.
+
+Where it's weaker:
+- **No validation yet.** Weave and GitClear claim measured correlations with expert judgement; this project's thresholds are starting guesses until `evaluate.py` is run on real labels.
+- **Most commits still need the AI** for developers whose commits are mostly real work. In a test run on one maintainer, the rules decided 11 of 59 commits (about 1 in 5); the AI step and shadow mode exist for the rest. The rules remove noise; they don't replace judgement.
+- **No integrations beyond GitHub**, no dashboard yet, and no AI-attribution measure, which is where much of the market's money is going.
+
+Possible positioning: **a tool engineers run on themselves**, to show the real work behind their PRs at review time, rather than a tool managers point at engineers. That answers the "big brother" problem the market already has.
+
 ## Known limitations
 
 - **Thresholds aren't validated yet.** Use `evaluate.py` on 50–100 real commits before trusting the results.
 - **Lines aren't comparable across languages.** 100 lines of Java and 100 lines of Python are different amounts of work, so compare people within similar codebases.
 - **Unclassified commits score 0.** If the AI fails on some commits, their authors are pulled down in the team comparison until those commits are rerun. The results warn when this happens.
+- **Force-pushes are common.** In a test run, 13 of 34 PRs (38%) had been force-pushed. Step 3.5 orders by commit position to stay correct, but when a review's commit was rewritten away it falls back to author dates, so those PRs are marked in the results.
 - **Co-author matching is best effort.** It matches GitHub noreply emails and names, so a co-author listed with a personal email GitHub can't link may be missed.

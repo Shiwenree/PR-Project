@@ -23,7 +23,8 @@ from config import (
     AI_MODEL, BATCH_POLL_SECONDS, SURVIVAL_THRESHOLD, SURVIVAL_SIMILARITY,
     MEANINGFUL_COMMIT_WEIGHT, ADDRESS_COMMENT_WEIGHT, TESTING_WEIGHT,
     ADDITION_WEIGHT, DELETION_WEIGHT, SIZE_WEIGHT, SIZE_LINE_CAP,
-    MEANINGFUL_PR_PERCENTILE, TOP_N_PRS, RESULTS_FILE
+    MEANINGFUL_PR_PERCENTILE, TOP_N_PRS, RESULTS_FILE,
+    SHADOW_MIN_ADDED_LINES, SHADOW_MIN_SURVIVAL, SHADOW_LOG_FILE
 )
 from reviews import get_pr_reviews, get_pr_comments, get_pr_commits, parse_time, login_of
 
@@ -243,6 +244,10 @@ def is_whitespace_only(files):
     return True
 
 
+def is_config_file(path):
+    return os.path.basename(path) in LOCK_FILES or any(cfg in path for cfg in CONFIG_FILES)
+
+
 def step1_lint_config(commit_data):
     """config-only files, tiny diffs, whitespace-only line diffs"""
     files = commit_data["files"]
@@ -250,7 +255,7 @@ def step1_lint_config(commit_data):
     total_changes = stats.get("additions", 0) + stats.get("deletions", 0)
     changed_files = [f["filename"] for f in files]
 
-    if all(any(cfg in f for cfg in CONFIG_FILES) for f in changed_files):
+    if all(is_config_file(f) for f in changed_files):
         return "lint/config", "step 1: config files only"
     if total_changes <= MINOR_CHANGE_LINES:
         return "lint/config", f"step 1: {MINOR_CHANGE_LINES} changed lines or fewer"
@@ -350,6 +355,18 @@ def is_comment_line(line):
     return any(line.strip().startswith(p) for p in COMMENT_LINE_PREFIXES)
 
 
+def same_code_ignoring_layout(f):
+    """
+    a formatter rewrapping lines (e.g. joining a struct written over 7 lines into 1):
+    the removed and added code match once whitespace is gone and a trailing comma
+    before a closing bracket is ignored
+    """
+    def flat(lines):
+        code = "".join(re.sub(r"\s+", "", l).replace("'", '"') for l in lines)
+        return re.sub(r",([)\]}])", r"\1", code)
+    return flat(removed_lines(f)) == flat(added_lines(f))
+
+
 def is_lint_by_content(files):
     """every changed line is a comment, or the change is formatting only once normalized"""
     if not has_patches(files):
@@ -361,7 +378,7 @@ def is_lint_by_content(files):
     for f in files:
         added = Counter(normalize_for_lint(l) for l in added_lines(f) if l.strip())
         removed = Counter(normalize_for_lint(l) for l in removed_lines(f) if l.strip())
-        if added != removed:
+        if added != removed and not same_code_ignoring_layout(f):
             return False
     return True
 
@@ -557,7 +574,27 @@ def commit_record(commit_data, repo_full_name):
         "bucket": None,
         "decided_by": None,
         "ai_reason": "N/A",  # only commits that reach the AI get a reason
+        "shadow_rule": None,  # what the candidate free rule would say, for commits sent to the AI
     }
+
+
+def shadow_rule(commit_data, ctx):
+    """
+    a candidate free rule, recorded next to the AI's answer but never used for scoring:
+    "meaningful" when the commit is substantial source code (no test or config files)
+    that made it into the final PR, otherwise None
+    """
+    files = commit_data["files"]
+    if not has_patches(files):
+        return None
+    if any(is_test_file(f["filename"]) or is_config_file(f["filename"]) for f in files):
+        return None
+    substantive = sum(1 for f in files for l in added_lines(f) if re.search(r"[A-Za-z0-9]", l))
+    if substantive < SHADOW_MIN_ADDED_LINES:
+        return None
+    if survival_ratio(commit_data, ctx) < SHADOW_MIN_SURVIVAL:
+        return None
+    return "meaningful"
 
 
 def organize_commit(commit_data, ctx, ai):
@@ -572,6 +609,7 @@ def organize_commit(commit_data, ctx, ai):
                   step35_conversation_check(commit_data, ctx) or
                   step4_lint_by_content(commit_data, wip_flags, ctx))
         if not result:
+            record["shadow_rule"] = shadow_rule(commit_data, ctx)
             ai.classify(record, commit_data, ctx, wip_flags[0])
             return record
 
@@ -759,6 +797,29 @@ def print_comparison(org_average, team_summaries, users):
             print(f"    {m['username']:<20} {m['total_score']:>8}   {m['vs_team_pct']:+d}% vs team   {m['vs_org_pct']:+d}% vs org")
 
 
+def append_shadow_log(users):
+    """
+    add every AI decision, with the shadow rule's guess, to the log kept across runs.
+    returns how many were added
+    """
+    logged_at = datetime.now().isoformat(timespec="seconds")
+    count = 0
+    with open(SHADOW_LOG_FILE, "a") as f:
+        for user in users.values():
+            for pr in user["prs"]:
+                for r in pr["commits"]:
+                    if r["decided_by"] != "AI":
+                        continue
+                    f.write(json.dumps({
+                        "logged_at": logged_at, "ai_model": AI_MODEL, "username": user["username"],
+                        "repo": pr["repo"], "pr": pr["pr_number"], "sha": r["sha"], "url": r["url"],
+                        "message": r["message"], "additions": r["additions"], "deletions": r["deletions"],
+                        "shadow_rule": r["shadow_rule"], "ai_bucket": r["bucket"], "ai_reason": r["ai_reason"],
+                    }) + "\n")
+                    count += 1
+    return count
+
+
 # main
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Score GitHub users' merged PRs by meaningful work.")
@@ -805,3 +866,11 @@ if __name__ == "__main__":
             "users": list(users.values()),
         }, f, indent=2)
     print(f"\nFull results, with the reason for every commit, written to {RESULTS_FILE}")
+
+    logged = append_shadow_log(users)
+    if logged:
+        print(f"Added {logged} AI decisions to {SHADOW_LOG_FILE} — see `python evaluate.py shadow`")
+    elif ai.mode == "off":
+        would_handle = sum(1 for u in users.values() for pr in u["prs"] for r in pr["commits"]
+                           if r["shadow_rule"] == "meaningful")
+        print(f"Shadow rule would have handled {would_handle} of the commits skipped here (nothing logged without AI answers)")

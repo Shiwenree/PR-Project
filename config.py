@@ -49,7 +49,12 @@ REVERT_OVERLAP_THRESHOLD = 0.9  # diff must be >= 90% inverse of an earlier comm
 # --- step 1: lint/config ---
 MINOR_CHANGE_LINES = 2  # commits at or below this many changed lines are lint/minor
 CONFIG_FILES = [".eslintrc", ".prettierrc", ".babelrc", "jest.config",
-                "tsconfig", ".gitignore", "package.json", "requirements.txt"]
+                "tsconfig", ".gitignore", "package.json", "requirements.txt",
+                # other ecosystems' manifests
+                "Cargo.toml", "pyproject.toml", "setup.cfg", "go.mod", "Gemfile",
+                "pom.xml", "build.gradle", "rust-toolchain", ".editorconfig",
+                # release bookkeeping: version bumps usually touch only these
+                "CHANGELOG"]  # lock files (LOCK_FILES) also count as config
 
 # --- step 2: WIP flag ---
 WIP_KEYWORDS = ["wip", "tmp", "temp", "fixup", "squash", "checkpoint"]
@@ -72,6 +77,17 @@ AI_MODEL = "claude-haiku-5-5"  # bucket sorting is simple classification — Hai
 BATCH_POLL_SECONDS = 30   # how often --batch checks whether the batch has finished
 SURVIVAL_THRESHOLD = 0.5  # share of added lines that must survive into the PR's final diff
 SURVIVAL_SIMILARITY = 0.75  # a line this similar to a final line counts as surviving (catches renames)
+
+# --- shadow rule: a candidate free rule recorded next to the AI, never used for scoring ---
+# it calls a commit meaningful when it's substantial source code that made it into the final PR.
+# `python evaluate.py shadow` compares it with the AI's answers to see if it can replace AI calls
+SHADOW_MIN_ADDED_LINES = 50  # added lines with letters or digits
+SHADOW_MIN_SURVIVAL = 0.9    # share of those lines that reach the PR's final diff
+SHADOW_LOG_FILE = "shadow_log.jsonl"  # every AI decision with the rule's guess, kept across runs
+# the rule is trusted to replace the AI once all three hold
+SHADOW_MIN_COMMITS = 100     # commits the rule would have handled
+SHADOW_MIN_AGREEMENT = 0.98  # share of those where the AI also said meaningful
+SHADOW_MIN_PEOPLE = 5        # different authors among them
 
 # --- scoring weights ---
 # each bucket scores weight * log2(1 + commits), so one commit = the full weight and

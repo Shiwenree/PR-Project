@@ -87,6 +87,35 @@ def test_step1_reasons():
     assert P.step1_lint_config(tiny)[1].startswith("step 1: 2 changed lines")
 
 
+def test_release_commit_is_config():
+    # from BurntSushi/jiff "0.2.35": changelog + manifest version bumps
+    files = [{"filename": "CHANGELOG.md", "patch": "+0.2.35 (2026-07-25)", "changes": 8},
+             {"filename": "crates/jiff/Cargo.toml", "patch": '+version = "0.2.35"', "changes": 4},
+             {"filename": "Cargo.lock", "patch": '+version = "0.2.35"', "changes": 2}]
+    assert P.step1_lint_config(make_commit(files=files)) == ("lint/config", "step 1: config files only")
+
+
+def test_rewrapped_lines_are_formatting():
+    # from rust-lang/regex "automata: formatting tweaks": a struct joined onto one line
+    patch = "\n".join([
+        "-        Ok(ReverseInner {", "-            core,", "-            preinner: prefilter.pre,",
+        "-            nfarev,", "-            hybrid,", "-            dfa,", "-        })",
+        "+        Ok(ReverseInner { core, preinner: prefilter.pre, nfarev, hybrid, dfa })",
+    ])
+    assert P.is_lint_by_content([{"filename": "strategy.rs", "patch": patch}])
+
+
+def test_reindent_with_a_real_change_is_not_formatting():
+    # from rust-lang/regex "automata: fix indentation": mostly whitespace, but one message changed
+    patch = "\n".join([
+        '-\t\t "match, quitting to avoid quadratic behavior",',
+        '+                 "match, quitting to avoid quadratic behavior",',
+        '-\t\t concatenation could not found",',
+        '+supports 1 pattern, {} were given",',
+    ])
+    assert not P.is_lint_by_content([{"filename": "limited.rs", "patch": patch}])
+
+
 def test_files_without_a_diff_are_never_lint():
     big = [{"filename": "generated.bin"}]
     assert not P.is_whitespace_only(big)
@@ -239,3 +268,34 @@ def test_team_and_org_comparison():
     a = teams["x"]["members"][0]
     assert (a["total_score"], a["vs_team_pct"]) == (30, 50)
     assert users["c"]["meaningful_prs"] == 1 and users["b"]["meaningful_prs"] == 0
+
+
+# --- shadow rule ----------------------------------------------------------------
+
+def substantial_commit(path="src/engine.rs", lines=60):
+    patch = "\n".join(f"+let value_{i} = compute_{i}(input);" for i in range(lines))
+    return make_commit(files=[{"filename": path, "patch": patch, "changes": lines}]), \
+        {path: {f"let value_{i} = compute_{i}(input);" for i in range(lines)}}
+
+
+def test_shadow_rule_fires_on_substantial_surviving_source():
+    commit, final = substantial_commit()
+    assert P.shadow_rule(commit, make_ctx(final_lines=final)) == "meaningful"
+
+
+@pytest.mark.parametrize("path, lines, survives", [
+    ("src/engine.rs", 20, True),        # too small
+    ("tests/test_engine.py", 60, True),  # test file
+    ("Cargo.toml", 60, True),           # config file
+    ("src/engine.rs", 60, False),       # overwritten later in the PR
+])
+def test_shadow_rule_stays_quiet(path, lines, survives):
+    commit, final = substantial_commit(path, lines)
+    assert P.shadow_rule(commit, make_ctx(final_lines=final if survives else {})) is None
+
+
+def test_shadow_rule_is_recorded_but_never_decides():
+    commit, final = substantial_commit()
+    record = P.organize_commit(commit, make_ctx(final_lines=final), P.AIClassifier("off"))
+    assert record["shadow_rule"] == "meaningful"
+    assert record["bucket"] == "unclassified"  # the AI step still owns the decision

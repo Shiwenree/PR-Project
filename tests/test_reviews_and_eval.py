@@ -62,3 +62,36 @@ def test_stratified_sample_covers_rare_buckets():
     picked = E.stratified_sample(records, 10)
     assert len(picked) == 10
     assert any(r["bucket"] == "WIP" for r in picked)
+
+
+# --- shadow report ----------------------------------------------------------------
+
+def shadow_entry(sha, user, shadow, ai):
+    return {"sha": sha, "username": user, "repo": f"{user}/repo", "shadow_rule": shadow, "ai_bucket": ai,
+            "url": "", "message": "", "ai_reason": ""}
+
+
+def test_wilson_lower_bound():
+    assert round(E.wilson_lower_bound(95, 100), 3) == 0.888
+    assert E.wilson_lower_bound(0, 0) == 0.0
+
+
+def test_shadow_report_not_ready_with_too_little_evidence():
+    entries = [shadow_entry("a", "x", "meaningful", "meaningful"),
+               shadow_entry("b", "x", "meaningful", "WIP"),
+               shadow_entry("c", "y", None, "lint/config")]
+    r = E.shadow_report(entries)
+    assert (r["ai_decisions"], r["handled"], r["agree"], r["people"]) == (3, 2, 1, 1)
+    assert [e["sha"] for e in r["disagreements"]] == ["b"]
+    assert len(r["missing"]) == 3
+
+
+def test_shadow_report_ready():
+    entries = [shadow_entry(str(i), f"user{i % 5}", "meaningful", "meaningful") for i in range(100)]
+    assert E.shadow_report(entries)["missing"] == []
+
+
+def test_shadow_log_keeps_latest_entry_per_commit(tmp_path):
+    log = tmp_path / "shadow.jsonl"
+    log.write_text('{"sha": "a", "ai_bucket": "WIP"}\n{"sha": "a", "ai_bucket": "meaningful"}\n')
+    assert E.load_shadow_log(log) == [{"sha": "a", "ai_bucket": "meaningful"}]
