@@ -1,0 +1,4 @@
+{
+  "platform": ["alice", "bob", "carol"],
+  "web": ["dave", "erin"]
+}

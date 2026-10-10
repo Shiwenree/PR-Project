@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import json
 import requests
 import time
 import os
@@ -7,7 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-USERNAME = os.getenv("USERNAME")
+# GITHUB_USERNAME, not USERNAME — Windows already sets USERNAME to the computer's login name
+GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
+TEAMS_FILE = os.getenv("TEAMS_FILE", "teams.json")
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 headers = {
@@ -66,9 +69,13 @@ COMMENT_LINE_PREFIXES = ["#", "//", "/*", "*", "*/", "<!--"]
 
 # --- AI + meaningful check ---
 AI_MODEL = "claude-haiku-5-5"  # bucket sorting is simple classification — Haiku is ~50x cheaper than Opus
+BATCH_POLL_SECONDS = 30   # how often --batch checks whether the batch has finished
 SURVIVAL_THRESHOLD = 0.5  # share of added lines that must survive into the PR's final diff
+SURVIVAL_SIMILARITY = 0.75  # a line this similar to a final line counts as surviving (catches renames)
 
 # --- scoring weights ---
+# each bucket scores weight * log2(1 + commits), so one commit = the full weight and
+# splitting work into more commits has diminishing returns
 MEANINGFUL_COMMIT_WEIGHT = 3
 ADDRESS_COMMENT_WEIGHT = 1
 TESTING_WEIGHT = 1
@@ -80,12 +87,26 @@ SIZE_WEIGHT = 1.0
 SIZE_LINE_CAP = 2000  # weighted lines past this add nothing (generated files, vendored code)
 
 # --- results ---
-MEANINGFUL_PR_PERCENTILE = 75  # PRs scoring at or above this percentile count as meaningful
+MEANINGFUL_PR_PERCENTILE = 75  # PRs at or above this percentile of every PR in the run (all teams) count as meaningful
 TOP_N_PRS = 10
+RESULTS_FILE = "results.json"  # full results, per commit — the data source for a dashboard
 
 # rate limiting
 RATE_LIMIT_PAUSE = 1  # seconds to wait between API calls
 RATE_LIMIT_THRESHOLD = 100  # pause more aggressively when remaining calls drop below this
+
+def load_teams():
+    """
+    {team name: [github usernames]} from teams.json. without that file, a one-person
+    team from GITHUB_USERNAME. the org baseline is everyone across all teams
+    """
+    if os.path.exists(TEAMS_FILE):
+        with open(TEAMS_FILE) as f:
+            return json.load(f)
+    if GITHUB_USERNAME:
+        return {"default": [GITHUB_USERNAME]}
+    raise SystemExit(f"Set GITHUB_USERNAME in .env, or list your teams in {TEAMS_FILE}")
+
 
 def make_request(url, allow_missing=False):
     """
