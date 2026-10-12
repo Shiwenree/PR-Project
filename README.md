@@ -173,16 +173,6 @@ Researched October 2026. Pricing and accuracy figures mostly come from vendors o
 | [GitClear](https://www.gitclear.com/help/meaningful_code_line_change_definition) | "Diff Delta" / "Line Impact": throws out moved, whitespace, and comment changes (it claims about 95% of changed lines are noise), then weights the rest, with deletions worth more than additions. | Paid SaaS. | Same instinct as this project's pre-filter and steps 1 and 4, but **no AI** and line-level weights. This project weights additions *more* than deletions, the opposite choice. |
 | [DX](https://getdx.com/blog/5-metrics-in-dx-to-measure-ai-impact/) | "TrueThroughput" uses AI to weight PR throughput by complexity, alongside developer surveys (the "Core 4" framework). | Enterprise, sales-led. | Complexity-weighted throughput at PR level, combined with how developers feel. No per-commit breakdown. |
 
-### Established platforms: delivery metrics, now adding AI reporting
-
-| Company | Focus | Pricing (third-party estimates) | How it compares |
-|---|---|---|---|
-| [Jellyfish](https://jellyfish.co/library/tools-to-measure-ai-developer-productivity/) | Executive reporting, where engineering time goes, AI impact. Aimed at 200+ developer orgs. | Not public; [estimates run from $50k to $300k a year](https://coderbuds.com/blog/jellyfish-alternatives-2026). | Measures delivery and allocation, not whether individual commits were real work. |
-| [LinearB](https://linearb.io/blog/8-million-prs-engineering-productivity) | Delivery metrics plus workflow automation. Argues PR acceptance rate is a better AI measure than suggestion acceptance. | [Free for small teams; roughly $20–60 per developer per month](https://wetheflywheel.com/en/comparisons/linearb-vs-jellyfish-vs-swarmia/). | Counts and times PRs; doesn't judge what's inside them. |
-| [Swarmia](https://www.swarmia.com/blog/productivity-impact-of-ai-coding-tools/) | Developer experience and delivery metrics. Reports PR sizes roughly doubled from 2025 to 2026, which is why raw counts mislead. | [Free for small teams; about $23–45 per developer per month](https://orgsignals.com/comparisons/pricing-comparison). | Most transparent pricing; still PR-level metrics. |
-| [Waydev](https://www.ycombinator.com/companies/waydev-ai) | Repositioned in 2026 around AI: commit-level attribution of agent, tokens, cost per PR. | [About $10–25 per developer per month](https://gitvelocity.dev/blog/engineering-intelligence-market-2026). | Commit-level like this project, but measures *AI usage and cost*, not whether the work was meaningful. |
-| [Span](https://www.span.app/) | Detects AI-written code from the code itself, so it works without tool telemetry; tracks agent sessions. | [Raised $25M in November 2025](https://www.upstartsmedia.com/p/span-raises-25m-ai-code-tracker); pricing not public. | Answers "how much was AI-written", not "how much was real work". |
-
 ### Where this project fits
 
 What it does that the others don't:
