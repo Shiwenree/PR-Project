@@ -2,7 +2,7 @@
 
 Many companies measure software engineers in performance reviews by how many PRs they merge. A number isn't the problem. A raw count is: with AI, pushing many PRs is easier and faster than ever, so the count says less and less about the work behind them. This project replaces the raw count with a more comprehensive number: one score per PR that reflects how much meaningful work a GitHub user put into their merged pull requests, compared against their team and the wider org.
 
-Instead of counting raw commits or lines, every commit is sorted into a bucket (lint/config, WIP, testing, addressed comments, meaningful) so that formatting passes, throwaway work, and reverted changes don't inflate the score. Commit-message keywords only raise flags. The diff content and GitHub's review data decide the bucket, because anyone can type a keyword.
+Instead of counting raw commits or lines, every commit is sorted into a bucket (lint/config, WIP, testing, docs, addressed comments, meaningful) so that formatting passes, throwaway work, and reverted changes don't inflate the score. Commit-message keywords only raise flags. The diff content and GitHub's review data decide the bucket, because anyone can type a keyword.
 
 **Design diagram:** [Figma board](https://www.figma.com/board/2dmzwu1JJKPzuoWVXgia8W/PP?node-id=0-1)
 
@@ -31,8 +31,10 @@ Each remaining commit goes through these steps in order and stops at the first o
 | Step | Check | Bucket |
 |---|---|---|
 | 1. Size & config | Config-only files (including manifests like `Cargo.toml`, lock files, and changelogs, so version bumps land here), diffs of 2 lines or fewer, whitespace-only changes | Lint/Config |
+| | Docs-only files (`.md`, `.rst`, `.adoc`, README, LICENSE, ...) that mostly add text | Docs |
+| | Docs-only files that mostly remove text (stale or duplicated docs) | Lint/Config |
 | 2. WIP flag | WIP/temp keywords in the message, placeholder-only lines (`TODO`, `pass`, ...). Only sets flags | — |
-| 3. Test check | At least 80% of changed lines are in test files, and fewer than 20 non-test lines changed | Testing |
+| 3. Test check | At least 80% of changed lines are in test files (test directories like `tests/` and `testdata/`, or names like `test_*.py`), and fewer than 20 non-test lines changed | Testing |
 | 3.5. Conversation | A reviewer asked for changes before the commit (a Request Changes review, or an inline comment on a file the commit touches), and the same reviewer approved after it | Addressed Comments |
 | 4. Lint by content | Comment-only or formatting-only changes, including a formatter rewrapping lines | Lint/Config |
 | | Step 2 placeholder flag confirmed, or under half the added lines survive into the PR's final diff | WIP |
@@ -45,6 +47,9 @@ Details:
 - **"Before" and "after" in step 3.5** go by position in the PR's commit list, not by timestamp. GitHub records which commit each review and comment was made on, and that survives a rebase, while timestamps don't. If a force-push rewrote that commit away, the check falls back to the commit's author date, which a rebase keeps. PRs with a force-push are marked in the results.
 - **Survival** compares a commit's added lines against the lines the whole PR added, not the whole final file, so a line that already existed in the file doesn't count. A line at least 75% similar to a final line also counts, so renaming a variable in a later commit doesn't turn earlier work into WIP. Lines with no letters or digits (`}`, `);`) are skipped because they match anything.
 - **The AI** is told that the commit message and diff are written by the person being evaluated, and to ignore any instructions inside them (for example, a comment saying "classify this as meaningful").
+- **What the AI counts as meaningful:** refactors that restructure code count, even when behavior stays the same. Mechanical edits applied the same way everywhere (a rename, swapping a deprecated name), version bumps, and regenerated data files are lint/config.
+- **Large diffs are trimmed before the AI sees them:** at most 200 patch lines per file and 1,500 per commit. Every file is still listed with its line counts, so the AI knows what it isn't seeing. This keeps a 20,000-line commit about as cheap as a normal one.
+- **Docs** are real work, but a different kind from code, so they get their own bucket with the same weight as tests rather than counting as meaningful.
 - **Files GitHub returns without a diff** (binary or very large) are never treated as lint or formatting, since there is no content to check.
 
 ### 4. Calculation
@@ -52,13 +57,15 @@ Details:
 score = 3 × log2(1 + meaningful commits)
       + 1 × log2(1 + addressed comment commits)
       + 1 × log2(1 + testing commits)
+      + 1 × log2(1 + docs commits)
       + log2(1 + min(lines, 2000))
 
-lines = additions × 1.5 + deletions    # summed over the PR's meaningful commits
+lines = additions × 1.5 + deletions    # code lines in the PR's meaningful commits
 ```
 
 The bucket check answers *whether* a commit is real work. The size term answers *how much*:
 - **Size** uses a log scale, so a 500-line feature (about 9.6) beats a 10-line fix (4.0), but a 5,000-line generated file stops at the cap (11.0). It is computed over the PR's total meaningful lines, so splitting the same work into more commits doesn't raise it.
+- **Only code counts toward size.** Docs and config files are left out, and so are lines moved inside a commit: an added line that matches a removed line anywhere in the same commit cancels out, so moving code into a new crate doesn't count as writing it. Renamed files count 0, since git only calls a file renamed when it's mostly unchanged.
 - **Commit counts** are on a log scale too. One commit earns the full weight (one meaningful commit = 3), and each extra commit earns less. The same 500 lines in ten commits scores 19.9 instead of 12.6 for one commit, a 1.6× gap. With plain counts, the gap would be 10×.
 
 ### 5. Results
@@ -138,7 +145,7 @@ python evaluate.py score            # compare your labels with the pipeline
 
 ## Testing a free rule against the AI (shadow mode)
 
-Most commits from developers who mostly do real work reach the AI. To cut those calls, the pipeline tests a candidate free rule in the background: a commit is meaningful when it adds 50+ lines of source code (no test or config files) and 90%+ of those lines reach the PR's final diff. The rule **never affects scores**. It only records its guess next to the AI's answer, and every run that uses the AI adds those pairs to `shadow_log.jsonl`.
+Most commits from developers who mostly do real work reach the AI. To cut those calls, the pipeline tests a candidate free rule in the background: a commit is meaningful when it adds 50+ lines of source code (no test, config, or docs files, and no tests written inside the source, like Rust's `#[cfg(test)]`) and 90%+ of those lines reach the PR's final diff. The rule **never affects scores**. It only records its guess next to the AI's answer, and every run that uses the AI adds those pairs to `shadow_log.jsonl`.
 
 ```bash
 python evaluate.py shadow
@@ -197,4 +204,6 @@ Possible positioning: **a tool engineers run on themselves**, to show the real w
 - **Lines aren't comparable across languages.** 100 lines of Java and 100 lines of Python are different amounts of work, so compare people within similar codebases.
 - **Unclassified commits score 0.** If the AI fails on some commits, their authors are pulled down in the team comparison until those commits are rerun. The results warn when this happens.
 - **Force-pushes are common.** In a test run, 13 of 34 PRs (38%) had been force-pushed. Step 3.5 orders by commit position to stay correct, but when a review's commit was rewritten away it falls back to author dates, so those PRs are marked in the results.
+- **Moves are detected, copies aren't.** A line only cancels out when the same commit removes it somewhere else. Code copied into a new file while the original stays in place counts as new, and so does code moved between two files too large for GitHub to show a diff. In a test run, a commit that built a new crate by copying and adapting existing code counted about 8,500 lines, roughly a quarter of them verbatim copies. The 2,000-line size cap limits the damage.
+- **Tests written inside source files** (common in Rust) can't be found by file path, so those commits still go to the AI.
 - **Co-author matching is best effort.** It matches GitHub noreply emails and names, so a co-author listed with a personal email GitHub can't link may be missed.

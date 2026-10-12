@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 labels.csv
 shadow_log.jsonl
+.venv/

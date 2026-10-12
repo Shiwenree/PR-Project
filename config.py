@@ -56,12 +56,19 @@ CONFIG_FILES = [".eslintrc", ".prettierrc", ".babelrc", "jest.config",
                 # release bookkeeping: version bumps usually touch only these
                 "CHANGELOG"]  # lock files (LOCK_FILES) also count as config
 
+# --- step 1: docs ---
+# prose files. config files (CHANGELOG.md) are never docs, even with a doc extension
+DOC_EXTENSIONS = [".md", ".rst", ".adoc"]
+DOC_FILE_NAMES = ["README", "LICENSE", "COPYING", "UNLICENSE", "AUTHORS",
+                  "CONTRIBUTING", "CODE_OF_CONDUCT"]  # matched against the start of the file name
+
 # --- step 2: WIP flag ---
 WIP_KEYWORDS = ["wip", "tmp", "temp", "fixup", "squash", "checkpoint"]
 DUMMY_LINE_PATTERNS = ["pass", "TODO", "placeholder", "fixme", "hack"]
 
 # --- step 3: test files ---
-TEST_DIRS = ["test", "tests", "__tests__", "spec"]  # any directory in the path
+TEST_DIRS = ["test", "tests", "__tests__", "spec",   # any directory in the path
+             "testdata", "test-data", "test_data", "fixtures"]
 TEST_FILE_PATTERNS = [                               # matched against the file name
     "test_*.py", "*_test.py", "*_test.go", "*.test.*", "*.spec.*",
     "*Test.java", "*Spec.java"
@@ -75,6 +82,10 @@ COMMENT_LINE_PREFIXES = ["#", "//", "/*", "*", "*/", "<!--"]
 # --- AI + meaningful check ---
 AI_MODEL = "claude-haiku-5-5"  # bucket sorting is simple classification — Haiku is ~50x cheaper than Opus
 BATCH_POLL_SECONDS = 30   # how often --batch checks whether the batch has finished
+# the diff sent to the AI is trimmed so huge commits stay cheap and fit the model's context.
+# every file is still listed with its line counts; only the patch text is cut
+AI_MAX_LINES_PER_FILE = 200  # patch lines shown per file
+AI_MAX_DIFF_LINES = 1500     # patch lines shown across the whole commit
 SURVIVAL_THRESHOLD = 0.5  # share of added lines that must survive into the PR's final diff
 SURVIVAL_SIMILARITY = 0.75  # a line this similar to a final line counts as surviving (catches renames)
 
@@ -83,6 +94,10 @@ SURVIVAL_SIMILARITY = 0.75  # a line this similar to a final line counts as surv
 # `python evaluate.py shadow` compares it with the AI's answers to see if it can replace AI calls
 SHADOW_MIN_ADDED_LINES = 50  # added lines with letters or digits
 SHADOW_MIN_SURVIVAL = 0.9    # share of those lines that reach the PR's final diff
+# tests written inside source files (Rust's `mod tests`, a Python test_ function) — the rule
+# stays quiet when an added line looks like one, since the commit may be mostly tests
+TEST_CODE_MARKERS = [r"#\[test\]", r"#\[cfg\(test\)\]", r"\bdef test_", r"@Test\b",
+                     r"\bfunc Test", r"\b(describe|it|test)\(\s*['\"`]"]
 SHADOW_LOG_FILE = "shadow_log.jsonl"  # every AI decision with the rule's guess, kept across runs
 # the rule is trusted to replace the AI once all three hold
 SHADOW_MIN_COMMITS = 100     # commits the rule would have handled
@@ -95,10 +110,12 @@ SHADOW_MIN_PEOPLE = 5        # different authors among them
 MEANINGFUL_COMMIT_WEIGHT = 3
 ADDRESS_COMMENT_WEIGHT = 1
 TESTING_WEIGHT = 1
+DOCS_WEIGHT = 1
 ADDITION_WEIGHT = 1.5  # additions count more than deletions
 DELETION_WEIGHT = 1.0
 # size term = SIZE_WEIGHT * log2(1 + weighted meaningful lines in the PR), with lines capped.
 # taken over the whole PR, so splitting a feature into more commits doesn't change it
+# only code counts toward size: docs, config, and lines moved within the commit are left out
 SIZE_WEIGHT = 1.0
 SIZE_LINE_CAP = 2000  # weighted lines past this add nothing (generated files, vendored code)
 

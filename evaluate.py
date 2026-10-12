@@ -21,7 +21,7 @@ from config import (
     RESULTS_FILE, SHADOW_LOG_FILE, SHADOW_MIN_COMMITS, SHADOW_MIN_AGREEMENT, SHADOW_MIN_PEOPLE
 )
 
-LABELS = ["meaningful", "addressed comments", "testing", "lint/config", "WIP"]
+LABELS = ["meaningful", "addressed comments", "testing", "docs", "lint/config", "WIP"]
 LABELS_FILE = "labels.csv"
 FIELDS = ["sha", "repo", "pr", "url", "message", "label"]
 

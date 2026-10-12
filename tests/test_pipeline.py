@@ -73,11 +73,33 @@ def test_revert_chain_keeps_only_the_recommit():
     ("pkg/test_utils.py", True),
     ("web/button.spec.ts", True),
     ("server/handler_test.go", True),
+    ("testdata/regression.toml", True),
     ("src/latest_utils.py", False),
     ("contest_service.py", False),
 ])
 def test_is_test_file(path, expected):
     assert P.is_test_file(path) is expected
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("AI_POLICY.md", True),
+    ("crates/index/README.md", True),
+    ("docs/guide.rst", True),
+    ("COPYING", True),
+    ("CHANGELOG.md", False),  # release bookkeeping is config
+    ("src/readme_parser.rs", False),
+])
+def test_is_doc_file(path, expected):
+    assert P.is_doc_file(path) is expected
+
+
+def test_docs_only_commits():
+    # from BurntSushi/bstr "doc: add AI Policy" and ripgrep "index: remove incorrect README"
+    added = make_commit(files=[{"filename": "AI_POLICY.md", "patch": "+x", "changes": 38}], additions=38)
+    assert P.step1_lint_config(added) == ("docs", "step 1: docs files only")
+    removed = make_commit(files=[{"filename": "crates/index/README.md", "patch": "-x", "changes": 101}],
+                          additions=1, deletions=100)
+    assert P.step1_lint_config(removed) == ("lint/config", "step 1: docs files only, mostly removed")
 
 
 def test_step1_reasons():
@@ -221,6 +243,18 @@ def test_no_ai_mode_marks_unclassified_without_calling_claude():
     assert record["decided_by"] == "skipped (--no-ai)"
 
 
+def test_large_diffs_are_trimmed_for_the_ai(monkeypatch):
+    monkeypatch.setattr(P, "AI_MAX_LINES_PER_FILE", 3)
+    monkeypatch.setattr(P, "AI_MAX_DIFF_LINES", 4)
+    files = [{"filename": "a.rs", "status": "added", "additions": 10, "patch": "\n".join(f"+a{i}" for i in range(10))},
+             {"filename": "b.rs", "status": "added", "additions": 10, "patch": "\n".join(f"+b{i}" for i in range(10))},
+             {"filename": "c.rs", "status": "added", "additions": 10, "patch": "+c0"}]
+    diff = P.diff_for_ai(files)
+    assert "+a2" in diff and "+a3" not in diff and "7 more patch lines" in diff
+    assert "+b0" in diff and "+b1" not in diff  # only 1 line of budget left
+    assert "--- c.rs (added, +10/-0)\n[patch not shown" in diff  # still listed
+
+
 def test_batch_mode_queues_requests():
     ai = P.AIClassifier("batch")
     record = P.commit_record(make_commit(), "org/repo")
@@ -256,6 +290,24 @@ def test_size_is_capped():
     assert P.size_term(1_000_000, 0) == P.size_term(10_000, 0)
 
 
+def test_docs_commit_earns_the_docs_weight():
+    assert P.calculate_pr_score(buckets(docs=1), 0, 0) == 1
+
+
+def test_moved_code_docs_and_config_dont_count_as_size():
+    # from BurntSushi/jiff "core: add new crate": code moved from one crate to another,
+    # plus copied docs and a manifest change
+    files = [
+        {"filename": "crates/old/src/util.rs", "status": "removed", "patch": "-fn parse(x: u8) {}\n-fn emit() {}"},
+        {"filename": "crates/core/src/util.rs", "status": "added", "patch": "+fn parse(x: u8) {}\n+fn emit() {}\n+fn new_api() {}"},
+        {"filename": "crates/core/DESIGN.md", "status": "added", "patch": "+# Design\n+lots of prose"},
+        {"filename": "Cargo.toml", "status": "modified", "patch": '+members = ["crates/core"]'},
+        {"filename": "crates/core/src/big.rs", "status": "renamed", "additions": 900, "deletions": 800},
+        {"filename": "crates/core/src/table.rs", "status": "added", "additions": 40},
+    ]
+    assert P.code_line_counts(files) == (1 + 40, 0)
+
+
 def test_team_and_org_comparison():
     users = {
         "a": {"username": "a", "prs": [{"score": 10}, {"score": 20}]},
@@ -287,11 +339,25 @@ def test_shadow_rule_fires_on_substantial_surviving_source():
     ("src/engine.rs", 20, True),        # too small
     ("tests/test_engine.py", 60, True),  # test file
     ("Cargo.toml", 60, True),           # config file
+    ("docs/engine.md", 60, True),       # docs file
     ("src/engine.rs", 60, False),       # overwritten later in the PR
 ])
 def test_shadow_rule_stays_quiet(path, lines, survives):
     commit, final = substantial_commit(path, lines)
     assert P.shadow_rule(commit, make_ctx(final_lines=final if survives else {})) is None
+
+
+def test_shadow_rule_stays_quiet_on_tests_inside_source():
+    # from rust-lang/regex "automata: add tests for confirming the regex engine choice"
+    commit, final = substantial_commit()
+    commit["files"][0]["patch"] += "\n+#[cfg(test)]\n+mod tests {"
+    assert P.shadow_rule(commit, make_ctx(final_lines=final)) is None
+
+
+@pytest.mark.parametrize("n, expected", [(1, "1st"), (2, "2nd"), (3, "3rd"), (11, "11th"),
+                                         (12, "12th"), (75, "75th"), (91, "91st"), (100, "100th")])
+def test_ordinal(n, expected):
+    assert P.ordinal(n) == expected
 
 
 def test_shadow_rule_is_recorded_but_never_decides():
